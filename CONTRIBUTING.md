@@ -13,7 +13,7 @@
   - macOS on Apple Silicon
 
 Intel Macs cannot enter the development shell.
-Intel builds are handled through a universal binary, tracked in issue #30.
+Intel Macs will be supported through a universal binary, tracked in issue #30.
 
 ### Development shell
 
