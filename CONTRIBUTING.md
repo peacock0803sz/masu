@@ -1,4 +1,4 @@
 # Contribution Guidelines
 
-- (MUST) Write in English for all documents, including comments in source
+- (MUST) Write source code, comments, commit messages, GitHub issues, and committed documents in English
 - (MUST) Use .gitmessage for commit template
