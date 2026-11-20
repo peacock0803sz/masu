@@ -1,0 +1,9 @@
+[package]
+name = "masu"
+version = "0.1.0"
+edition = "2024"
+description = "Recursively measures disk usage on macOS and shows it as a treemap"
+repository = "https://github.com/peacock0803sz/masu"
+
+[dependencies]
+clap = { version = "4.6.8", features = ["derive"] }
