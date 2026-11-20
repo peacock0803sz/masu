@@ -1,6 +1,7 @@
 use clap::Parser;
 
 #[derive(Debug, Parser)]
+#[command(version, about, arg_required_else_help = true)]
 pub struct Cli {}
 
 #[cfg(test)]
