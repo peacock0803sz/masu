@@ -36,9 +36,7 @@
         }:
         let
           toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-          craneLib = (inputs.crane.mkLib pkgs).overrideToolchain (
-            p: p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml
-          );
+          craneLib = (inputs.crane.mkLib pkgs).overrideToolchain (_: toolchain);
 
           commonArgs = {
             src = craneLib.cleanCargoSource ./.;
