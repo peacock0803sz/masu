@@ -22,15 +22,18 @@ fn no_arguments_prints_help_to_stderr_and_exits_with_2() {
     let output = masu(&[]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(stderr(&output).contains("Usage: masu"));
+    // A usage error also mentions "Usage: masu", so compare with the real help.
+    assert_eq!(stderr(&output), stdout(&masu(&["--help"])));
 }
 
 fn assert_help(flag: &str) {
     let output = masu(&[flag]);
     assert_eq!(output.status.code(), Some(0));
     let out = stdout(&output);
+    assert_eq!(out.lines().next(), Some(env!("CARGO_PKG_DESCRIPTION")));
     assert!(out.contains("Usage: masu"));
-    assert!(out.contains(env!("CARGO_PKG_DESCRIPTION")));
+    assert!(out.contains("-h, --help"));
+    assert!(out.contains("-V, --version"));
     assert!(output.stderr.is_empty());
 }
 
@@ -68,7 +71,9 @@ fn assert_usage_error(arg: &str) {
     let output = masu(&[arg]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(stderr(&output).starts_with("error:"));
+    let err = stderr(&output);
+    assert!(err.starts_with("error:"));
+    assert!(err.contains("Usage: masu"));
 }
 
 #[test]
