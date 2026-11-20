@@ -45,6 +45,7 @@ masu targets macOS, but contributors also develop on Linux.
 Keep the checks passing on both.
 
 - Put code that calls macOS APIs, and its tests, under `#[cfg(target_os = "macos")]`
+- Declare crates that only build on macOS under `[target.'cfg(target_os = "macos")'.dependencies]`
 - Start an integration test file that only works on macOS with `#![cfg(target_os = "macos")]`
 - Gate helper code used only by macOS-specific code with the same `cfg`.
   Do not silence it with `#[allow(dead_code)]`, directly or through `cfg_attr`.
