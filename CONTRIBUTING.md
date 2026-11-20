@@ -39,7 +39,7 @@ cargo test --locked
 `nix flake check` passes `--locked` to cargo, so it fails when `Cargo.lock` does not match `Cargo.toml`.
 
 Nix does not see files that git does not track.
-Run `git add` on new files before running `nix flake check`.
+Run `git add` on new files before running `nix flake check` or `nix develop`.
 
 ## Platform-specific code
 
