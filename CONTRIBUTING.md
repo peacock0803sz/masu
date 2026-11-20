@@ -47,7 +47,8 @@ Keep the checks passing on both.
 - Put code that calls macOS APIs, and its tests, under `#[cfg(target_os = "macos")]`
 - Start an integration test file that only works on macOS with `#![cfg(target_os = "macos")]`
 - Gate helper code used only by macOS-specific code with the same `cfg`.
-  Do not silence it with `cfg_attr` and `allow(dead_code)`, because the Linux build would then hide unused code
+  Do not silence it with `#[allow(dead_code)]`, directly or through `cfg_attr`.
+  The allow would also hide code that becomes dead on macOS
 - Everything outside these gates must build and pass its tests on Linux
 - Keep tests that need `sudo` or disk images out of `nix flake check`.
   The issue that adds such a test also adds the CI steps to run it
