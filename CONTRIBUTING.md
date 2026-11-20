@@ -45,6 +45,7 @@ Run `git add` on new files before running `nix flake check` or `nix develop`.
 
 masu targets macOS, but contributors also develop on Linux.
 Keep the checks passing on both.
+`nix flake check` on Linux does not compile macOS-only code, so only the macOS CI jobs check it.
 
 - Put code that calls macOS APIs, and its tests, under `#[cfg(target_os = "macos")]`
 - Declare crates that only build on macOS under `[target.'cfg(target_os = "macos")'.dependencies]`
