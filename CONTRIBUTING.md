@@ -32,9 +32,11 @@ Inside the development shell, you can run each check on its own:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
+
+`nix flake check` passes `--locked` to cargo, so it fails when `Cargo.lock` does not match `Cargo.toml`.
 
 Nix does not see files that git does not track.
 Run `git add` on new files before running `nix flake check`.
