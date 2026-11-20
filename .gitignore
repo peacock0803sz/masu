@@ -24,8 +24,10 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Re-include test fixtures in case a global gitignore excludes *.ipynb
-!crates/europa-core/tests/fixtures/**/*.ipynb
+# Nix and development environment
+result
+.direnv/
+.pre-commit-config.yaml
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
