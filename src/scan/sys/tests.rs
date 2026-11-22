@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::io::Write as _;
 
 use super::{BUF_SIZE, read_dir, read_dir_with};
-use crate::scan::listing::{Entry, Kind, Listing};
+use crate::scan::listing::{Entry, Failure, Kind, Listing};
 
 /// A directory under the system temp dir that is removed on drop.
 struct TempDir {
@@ -234,4 +234,132 @@ fn reads_empty_directory() {
     let dir = TempDir::new("empty");
     let listing = read_dir(dir.path());
     assert_eq!(listing, Listing::default());
+}
+
+fn running_as_root() -> bool {
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[test]
+fn open_failures() {
+    let dir = TempDir::new("open");
+    let failure = |path: &Path| read_dir(path).failure;
+
+    assert_eq!(
+        failure(&dir.path().join("missing")),
+        Some(Failure::Open(libc::ENOENT))
+    );
+
+    let file = dir.path().join("file");
+    fs::write(&file, b"x").unwrap();
+    assert_eq!(failure(&file), Some(Failure::Open(libc::ENOTDIR)));
+
+    let target = dir.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("inside"), b"x").unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let listing = read_dir(&link);
+    match listing.failure {
+        Some(Failure::Open(e)) if e == libc::ENOTDIR || e == libc::ELOOP => {
+            log_line(&format!("open of a symlink to a directory failed with {e}"));
+        }
+        other => panic!("unexpected failure {other:?}"),
+    }
+    assert_eq!(listing.entries, vec![]);
+
+    let mut long = dir.path().to_path_buf();
+    for _ in 0..600 {
+        long.push("a");
+    }
+    assert_eq!(failure(&long), Some(Failure::Open(libc::ENAMETOOLONG)));
+
+    assert_eq!(
+        failure(Path::new(OsStr::from_bytes(b"a\0b"))),
+        Some(Failure::Open(libc::EINVAL))
+    );
+
+    if running_as_root() {
+        log_line("running as root, so the permission checks are skipped");
+        return;
+    }
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(failure(&locked), Some(Failure::Open(libc::EACCES)));
+
+    let unsearchable = dir.path().join("unsearchable");
+    fs::create_dir(&unsearchable).unwrap();
+    fs::write(unsearchable.join("inside"), b"x").unwrap();
+    fs::set_permissions(&unsearchable, fs::Permissions::from_mode(0o600)).unwrap();
+    let listing = read_dir(&unsearchable);
+    assert_eq!(listing.failure, Some(Failure::Read(libc::EACCES)));
+    assert_eq!(listing.entries, vec![]);
+    fs::set_permissions(&unsearchable, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// Counts the open file descriptors of this process.
+fn open_fds() -> usize {
+    // SAFETY: `getdtablesize` takes no arguments and cannot fail.
+    let max = unsafe { libc::getdtablesize() };
+    (0..max)
+        // SAFETY: `F_GETFD` only reads the flags of `fd`, valid or not.
+        .filter(|&fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1)
+        .count()
+}
+
+/// Counting descriptors is only stable in a process of its own, because the
+/// other tests open and close files in parallel.
+#[test]
+fn fds_stay_balanced() {
+    let exe = std::env::current_exe().unwrap();
+    let output = std::process::Command::new(exe)
+        .args([
+            "--exact",
+            "scan::sys::tests::fd_balance_child",
+            "--ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env("MASU_FD_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "run in a child process by fds_stay_balanced"]
+fn fd_balance_child() {
+    if std::env::var("MASU_FD_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+    let dir = TempDir::new("fds");
+    let full = dir.path().join("full");
+    fs::create_dir(&full).unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(full.join(name), b"x").unwrap();
+    }
+    let file = dir.path().join("file");
+    fs::write(&file, b"x").unwrap();
+    let mut paths = vec![full, dir.path().join("missing"), file];
+    if !running_as_root() {
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("inside"), b"x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
+        paths.push(locked);
+    }
+
+    let before = open_fds();
+    for i in 0..1000 {
+        read_dir(&paths[i % paths.len()]);
+    }
+    assert_eq!(open_fds(), before);
 }
