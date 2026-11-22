@@ -50,15 +50,23 @@ fn last_errno() -> i32 {
 
 /// Opens `path` as a directory without following a symbolic link at its end.
 fn open_dir(path: &Path) -> Result<OwnedFd, i32> {
+    // A path with a NUL cannot name anything, which is what EINVAL says.
     let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
         return Err(libc::EINVAL);
     };
     let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    // SAFETY: `path` is a valid NUL-terminated string that outlives the call.
-    let fd = unsafe { libc::open(path.as_ptr(), flags) };
-    if fd < 0 {
-        return Err(last_errno());
-    }
+    let fd = loop {
+        // SAFETY: `path` is a valid NUL-terminated string that outlives the call.
+        let fd = unsafe { libc::open(path.as_ptr(), flags) };
+        if fd >= 0 {
+            break fd;
+        }
+        // A signal is not a failure to open, so try again.
+        let errno = last_errno();
+        if errno != libc::EINTR {
+            return Err(errno);
+        }
+    };
     // SAFETY: `open` returned `fd` and nothing else owns it.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
