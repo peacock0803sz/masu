@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::*;
+use crate::scan::listing::{Entry, Failure, Kind, Listing};
 
 /// The buffer size the tests hand to `collect`.
 const TEST_BUF: usize = 4096;
@@ -126,4 +127,284 @@ fn scripted(
         }
     };
     (fill, calls)
+}
+
+/// A regular file with every attribute present.
+fn plain(name: &[u8]) -> Spec {
+    Spec {
+        name: Some(name.to_vec()),
+        dev: Some(7),
+        objtype: Some(1),
+        fileid: Some(10),
+        link_count: Some(1),
+        alloc: Some(4096),
+        size: Some(5),
+        ..Spec::default()
+    }
+}
+
+/// What `plain` is expected to read as.
+fn plain_entry(name: &[u8]) -> Entry {
+    Entry {
+        name: name.to_vec(),
+        kind: Some(Kind::File),
+        dev: Some(7),
+        ino: Some(10),
+        link_count: Some(1),
+        alloc_size: Some(4096),
+        logical_size: Some(5),
+        mount_point: None,
+    }
+}
+
+fn read(specs: &[Spec]) -> (Listing, u32) {
+    let (fill, calls) = scripted(vec![Ok(batch(specs))]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    (listing, calls.get())
+}
+
+#[test]
+fn reads_hand_written_entry() {
+    // Written from the layout in getattrlistbulk(2), not from `encode`.
+    let words: [&[u8]; 17] = [
+        &72u32.to_ne_bytes(),
+        &0x8200_000Bu32.to_ne_bytes(),
+        &0u32.to_ne_bytes(),
+        &0u32.to_ne_bytes(),
+        &0x0000_0205u32.to_ne_bytes(),
+        &0u32.to_ne_bytes(),
+        &44i32.to_ne_bytes(),
+        &2u32.to_ne_bytes(),
+        &0x0100_0004i32.to_ne_bytes(),
+        &1u32.to_ne_bytes(),
+        &12345u64.to_ne_bytes(),
+        &1u32.to_ne_bytes(),
+        &4096i64.to_ne_bytes(),
+        &5i64.to_ne_bytes(),
+        b"a",
+        &[0, 0, 0],
+        &[],
+    ];
+    let bytes = words.concat();
+    assert_eq!(bytes.len(), 72);
+
+    let spec = Spec {
+        name: Some(b"a".to_vec()),
+        dev: Some(0x0100_0004),
+        objtype: Some(1),
+        fileid: Some(12345),
+        link_count: Some(1),
+        alloc: Some(4096),
+        size: Some(5),
+        ..Spec::default()
+    };
+    assert_eq!(spec.encode(), bytes);
+
+    let (fill, _) = scripted(vec![Ok((bytes, 1))]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(
+        listing,
+        Listing {
+            entries: vec![Entry {
+                name: b"a".to_vec(),
+                kind: Some(Kind::File),
+                dev: Some(0x0100_0004),
+                ino: Some(12345),
+                link_count: Some(1),
+                alloc_size: Some(4096),
+                logical_size: Some(5),
+                mount_point: None,
+            }],
+            errors: vec![],
+            failure: None,
+        }
+    );
+}
+
+#[test]
+fn maps_object_types_to_kinds() {
+    for (objtype, kind) in [
+        (1, Kind::File),
+        (5, Kind::Symlink),
+        (7, Kind::Other),
+        (0, Kind::Other),
+    ] {
+        let spec = Spec {
+            objtype: Some(objtype),
+            ..plain(b"x")
+        };
+        let (listing, _) = read(&[spec]);
+        assert_eq!(listing.entries[0].kind, Some(kind), "objtype {objtype}");
+    }
+}
+
+#[test]
+fn directory_without_directory_attributes_has_no_sizes() {
+    let spec = Spec {
+        name: Some(b"d".to_vec()),
+        dev: Some(7),
+        objtype: Some(2),
+        fileid: Some(11),
+        ..Spec::default()
+    };
+    let (listing, _) = read(&[spec]);
+    assert_eq!(
+        listing.entries,
+        vec![Entry {
+            name: b"d".to_vec(),
+            kind: Some(Kind::Dir),
+            dev: Some(7),
+            ino: Some(11),
+            link_count: None,
+            alloc_size: None,
+            logical_size: None,
+            mount_point: None,
+        }]
+    );
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn keeps_the_bytes_of_a_decomposed_name() {
+    let name = [0xE3, 0x81, 0x8B, 0xE3, 0x82, 0x99];
+    let (listing, _) = read(&[plain(&name)]);
+    assert_eq!(listing.entries[0].name, name);
+}
+
+#[test]
+fn name_ends_at_the_first_nul() {
+    let (listing, _) = read(&[plain(b"ab\0cd")]);
+    assert_eq!(listing.entries[0].name, b"ab");
+}
+
+#[test]
+fn missing_attributes_stay_none() {
+    let no_alloc = Spec {
+        alloc: None,
+        ..plain(b"x")
+    };
+    let no_type = Spec {
+        objtype: None,
+        ..plain(b"y")
+    };
+    let (listing, _) = read(&[no_alloc, no_type]);
+    assert_eq!(
+        listing.entries[0],
+        Entry {
+            alloc_size: None,
+            ..plain_entry(b"x")
+        }
+    );
+    assert_eq!(
+        listing.entries[1],
+        Entry {
+            kind: None,
+            ..plain_entry(b"y")
+        }
+    );
+}
+
+#[test]
+fn zero_error_reads_as_a_plain_entry() {
+    let spec = Spec {
+        error: Some(0),
+        ..plain(b"x")
+    };
+    let (listing, _) = read(&[spec]);
+    assert_eq!(listing.entries, vec![plain_entry(b"x")]);
+    assert_eq!(listing.errors, vec![]);
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn keeps_the_order_of_a_response() {
+    let (listing, _) = read(&[plain(b"b"), plain(b"a")]);
+    assert_eq!(listing.entries, vec![plain_entry(b"b"), plain_entry(b"a")]);
+}
+
+#[test]
+fn keeps_entries_read_before_a_failed_call() {
+    let (fill, calls) = scripted(vec![Ok(batch(&[plain(b"a"), plain(b"b")])), Err(5)]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(listing.entries, vec![plain_entry(b"a"), plain_entry(b"b")]);
+    assert_eq!(listing.failure, Some(Failure::Read(5)));
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn count_larger_than_the_bytes_is_malformed() {
+    let (bytes, _) = batch(&[plain(b"a")]);
+    let (fill, _) = scripted(vec![Ok((bytes, 2))]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(listing.entries, vec![plain_entry(b"a")]);
+    assert_eq!(listing.failure, Some(Failure::Malformed));
+}
+
+#[test]
+fn entry_without_a_name_is_malformed() {
+    let nameless = Spec {
+        name: None,
+        ..plain(b"")
+    };
+    let (listing, _) = read(&[plain(b"a"), nameless]);
+    assert_eq!(listing.entries, vec![plain_entry(b"a")]);
+    assert_eq!(listing.failure, Some(Failure::Malformed));
+}
+
+#[test]
+fn broken_second_entry_stops_the_read() {
+    let with_returned = |returned: [u32; 5]| Spec {
+        returned: Some(returned),
+        ..plain(b"x")
+    };
+    let common = REQUESTED_COMMON;
+    let file = REQUESTED_FILE;
+    let broken = [
+        (
+            "entry shorter than its header",
+            Spec {
+                length: Some(16),
+                ..plain(b"x")
+            },
+        ),
+        (
+            "entry longer than the buffer",
+            Spec {
+                length: Some(TEST_BUF as u32 + 8),
+                ..plain(b"x")
+            },
+        ),
+        (
+            "values past the end of the entry",
+            Spec {
+                length: Some(28),
+                ..plain(b"x")
+            },
+        ),
+        (
+            "common attribute that was not requested",
+            with_returned([common | 0x4, 0, 0, file, 0]),
+        ),
+        ("volume attributes", with_returned([common, 1, 0, file, 0])),
+        (
+            "name outside of the entry",
+            Spec {
+                name_ref: Some((1000, 2)),
+                ..plain(b"x")
+            },
+        ),
+        (
+            "negative allocation size",
+            Spec {
+                alloc: Some(-1),
+                ..plain(b"x")
+            },
+        ),
+    ];
+    for (why, second) in broken {
+        let (listing, calls) = read(&[plain(b"a"), second]);
+        assert_eq!(listing.entries, vec![plain_entry(b"a")], "{why}");
+        assert_eq!(listing.failure, Some(Failure::Malformed), "{why}");
+        assert_eq!(calls, 1, "{why}");
+    }
 }
