@@ -25,6 +25,9 @@ struct Spec {
     alloc: Option<i64>,
     size: Option<i64>,
     length: Option<u32>,
+    mount_status: Option<u32>,
+    dir_alloc: Option<i64>,
+    dir_size: Option<i64>,
 }
 
 impl Spec {
@@ -32,6 +35,7 @@ impl Spec {
     fn encode(&self) -> Vec<u8> {
         let mut common = ATTR_CMN_RETURNED_ATTRS;
         let mut file = 0;
+        let mut dir = 0;
         let set = |present: bool, bits: &mut u32, bit: u32| {
             if present {
                 *bits |= bit;
@@ -42,10 +46,13 @@ impl Spec {
         set(self.dev.is_some(), &mut common, ATTR_CMN_DEVID);
         set(self.objtype.is_some(), &mut common, ATTR_CMN_OBJTYPE);
         set(self.fileid.is_some(), &mut common, ATTR_CMN_FILEID);
+        set(self.mount_status.is_some(), &mut dir, ATTR_DIR_MOUNTSTATUS);
+        set(self.dir_alloc.is_some(), &mut dir, ATTR_DIR_ALLOCSIZE);
+        set(self.dir_size.is_some(), &mut dir, ATTR_DIR_DATALENGTH);
         set(self.link_count.is_some(), &mut file, ATTR_FILE_LINKCOUNT);
         set(self.alloc.is_some(), &mut file, ATTR_FILE_ALLOCSIZE);
         set(self.size.is_some(), &mut file, ATTR_FILE_DATALENGTH);
-        let returned = self.returned.unwrap_or([common, 0, 0, file, 0]);
+        let returned = self.returned.unwrap_or([common, 0, dir, file, 0]);
 
         let mut out = vec![0u8; 4];
         for word in returned {
@@ -66,6 +73,15 @@ impl Spec {
         }
         if let Some(fileid) = self.fileid {
             out.extend_from_slice(&fileid.to_ne_bytes());
+        }
+        if let Some(mount_status) = self.mount_status {
+            out.extend_from_slice(&mount_status.to_ne_bytes());
+        }
+        if let Some(dir_alloc) = self.dir_alloc {
+            out.extend_from_slice(&dir_alloc.to_ne_bytes());
+        }
+        if let Some(dir_size) = self.dir_size {
+            out.extend_from_slice(&dir_size.to_ne_bytes());
         }
         if let Some(link_count) = self.link_count {
             out.extend_from_slice(&link_count.to_ne_bytes());
@@ -529,4 +545,91 @@ fn errno_that_does_not_fit_is_malformed() {
     let (listing, _) = read(&[plain(b"a"), spec]);
     assert_eq!(listing.entries, vec![plain_entry(b"a")]);
     assert_eq!(listing.failure, Some(Failure::Malformed));
+}
+
+/// A directory with every directory attribute present.
+fn directory(name: &[u8], mount_status: u32) -> Spec {
+    Spec {
+        name: Some(name.to_vec()),
+        dev: Some(7),
+        objtype: Some(2),
+        fileid: Some(11),
+        mount_status: Some(mount_status),
+        dir_alloc: Some(0),
+        dir_size: Some(64),
+        ..Spec::default()
+    }
+}
+
+#[test]
+fn directory_attributes_fill_sizes_and_mount_mark() {
+    let (listing, _) = read(&[directory(b"d", 1)]);
+    assert_eq!(
+        listing.entries,
+        vec![Entry {
+            name: b"d".to_vec(),
+            kind: Some(Kind::Dir),
+            dev: Some(7),
+            ino: Some(11),
+            link_count: None,
+            alloc_size: Some(0),
+            logical_size: Some(64),
+            mount_point: Some(true),
+        }]
+    );
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn only_the_mount_point_bit_marks_a_mount_point() {
+    for status in [0, DIR_MNTSTATUS_TRIGGER] {
+        let (listing, _) = read(&[directory(b"d", status)]);
+        assert_eq!(listing.entries[0].mount_point, Some(false), "{status}");
+    }
+}
+
+#[test]
+fn kindless_entry_reads_whichever_group_came_back() {
+    let spec = Spec {
+        objtype: None,
+        ..directory(b"d", 0)
+    };
+    let (listing, _) = read(&[spec]);
+    let entry = &listing.entries[0];
+    assert_eq!(entry.kind, None);
+    assert_eq!(entry.mount_point, Some(false));
+    assert_eq!(entry.logical_size, Some(64));
+}
+
+#[test]
+fn mismatched_attribute_groups_are_malformed() {
+    let both = Spec {
+        link_count: Some(1),
+        ..directory(b"x", 0)
+    };
+    let dir_with_file_attributes = Spec {
+        link_count: Some(1),
+        alloc: Some(0),
+        size: Some(0),
+        mount_status: None,
+        dir_alloc: None,
+        dir_size: None,
+        ..directory(b"x", 0)
+    };
+    let file_with_dir_attributes = Spec {
+        mount_status: Some(0),
+        link_count: None,
+        alloc: None,
+        size: None,
+        ..plain(b"x")
+    };
+    for (why, second) in [
+        ("both groups", both),
+        ("directory with file attributes", dir_with_file_attributes),
+        ("file with directory attributes", file_with_dir_attributes),
+    ] {
+        let (listing, _) = read(&[plain(b"a"), second]);
+        assert_eq!(listing.entries, vec![plain_entry(b"a")], "{why}");
+        assert_eq!(listing.failure, Some(Failure::Malformed), "{why}");
+    }
 }
