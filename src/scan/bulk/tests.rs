@@ -105,12 +105,15 @@ fn batch(specs: &[Spec]) -> (Vec<u8>, u32) {
     (bytes, specs.len() as u32)
 }
 
+/// How many times a scripted `fill` was called.
+type Calls = Rc<Cell<u32>>;
+
 /// Returns a `fill` that plays back `steps` and a counter of its calls.
 ///
 /// Once the steps run out it reports the end of the directory.
 fn scripted(
     steps: Vec<Result<(Vec<u8>, u32), i32>>,
-) -> (impl FnMut(&mut [u8]) -> Result<u32, i32>, Rc<Cell<u32>>) {
+) -> (impl FnMut(&mut [u8]) -> Result<u32, i32>, Calls) {
     let calls = Rc::new(Cell::new(0));
     let counter = Rc::clone(&calls);
     let mut steps = VecDeque::from(steps);
