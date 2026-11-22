@@ -7,3 +7,6 @@ repository = "https://github.com/peacock0803sz/masu"
 
 [dependencies]
 clap = { version = "4.6.8", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.191"
