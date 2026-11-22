@@ -83,6 +83,12 @@ fn bulk_call(dir: &OwnedFd, attrs: &mut AttrList, buf: &mut [u8]) -> Result<u32,
 ///
 /// The directory is closed before returning, whatever the outcome.
 pub(crate) fn read_dir(path: &Path) -> Listing {
+    read_dir_with(path, &mut vec![0u8; BUF_SIZE], || {})
+}
+
+/// Like `read_dir`, but with the caller's buffer, and `on_call` runs before
+/// every `getattrlistbulk` call so that tests can count them.
+pub(crate) fn read_dir_with(path: &Path, buf: &mut [u8], mut on_call: impl FnMut()) -> Listing {
     let dir = match open_dir(path) {
         Ok(dir) => dir,
         Err(errno) => {
@@ -93,8 +99,10 @@ pub(crate) fn read_dir(path: &Path) -> Listing {
         }
     };
     let mut attrs = AttrList::requested();
-    let mut buf = vec![0u8; BUF_SIZE];
-    bulk::collect(&mut buf, |buf| bulk_call(&dir, &mut attrs, buf))
+    bulk::collect(buf, |buf| {
+        on_call();
+        bulk_call(&dir, &mut attrs, buf)
+    })
 }
 
 #[cfg(test)]
