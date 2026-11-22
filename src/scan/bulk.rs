@@ -32,6 +32,10 @@ pub(super) const REQUESTED_FILE: u32 =
 // subdirectories are read.
 pub(super) const REQUESTED_DIR: u32 = 0;
 
+/// `EINTR` in `sys/errno.h` on macOS. A signal interrupted the call, so the
+/// same call is made again.
+const EINTR: i32 = 4;
+
 /// The length field plus the five words of returned attribute sets.
 const ENTRY_HEADER: usize = 24;
 
@@ -210,6 +214,7 @@ pub(crate) fn collect(
                     break;
                 }
             }
+            Err(EINTR) => {}
             Err(errno) => {
                 listing.failure = Some(Failure::Read(errno));
                 break;
