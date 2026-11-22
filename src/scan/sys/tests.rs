@@ -6,8 +6,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::read_dir;
-use crate::scan::listing::{Entry, Kind};
+use std::io::Write as _;
+
+use super::{BUF_SIZE, read_dir, read_dir_with};
+use crate::scan::listing::{Entry, Kind, Listing};
 
 /// A directory under the system temp dir that is removed on drop.
 struct TempDir {
@@ -193,4 +195,43 @@ fn entries_match_lstat() {
     names.sort();
     expected.sort();
     assert_eq!(names, expected);
+}
+
+/// Writes a line straight to stderr so that it shows up in CI logs.
+///
+/// libtest captures `eprintln!` of passing tests and drops it, and
+/// `writeln!(stderr(), ..).unwrap()` trips `clippy::explicit_write`.
+fn log_line(line: &str) {
+    writeln!(std::io::stderr().lock(), "{line}").expect("write to stderr");
+}
+
+#[test]
+fn reads_ten_thousand_entries() {
+    let dir = TempDir::new("many");
+    let mut expected = std::collections::BTreeSet::new();
+    for i in 0..10_000 {
+        let name = format!("{i:05}-{}", "x".repeat(245));
+        fs::write(dir.path().join(&name), b"").unwrap();
+        expected.insert(name.into_bytes());
+    }
+
+    let mut calls = 0u32;
+    let mut buf = vec![0u8; BUF_SIZE];
+    let listing = read_dir_with(dir.path(), &mut buf, || calls += 1);
+
+    assert_eq!(listing.entries.len(), 10_000);
+    let names: std::collections::BTreeSet<_> =
+        listing.entries.iter().map(|e| e.name.clone()).collect();
+    assert_eq!(names, expected);
+    assert_eq!(listing.errors, vec![]);
+    assert_eq!(listing.failure, None);
+    assert!(calls <= 100, "{calls} getattrlistbulk calls");
+    log_line(&format!("getattrlistbulk calls for 10000 entries: {calls}"));
+}
+
+#[test]
+fn reads_empty_directory() {
+    let dir = TempDir::new("empty");
+    let listing = read_dir(dir.path());
+    assert_eq!(listing, Listing::default());
 }
