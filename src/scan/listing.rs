@@ -22,6 +22,12 @@ pub(crate) struct Listing {
 /// attribute, and are never filled with 0. The `link_count` of a directory and
 /// the `mount_point` of a non-directory are always `None`. `dev` has the same
 /// 32-bit signed type as `dev_t`.
+///
+/// For a directory, `alloc_size` and `logical_size` come from
+/// `ATTR_DIR_ALLOCSIZE` and `ATTR_DIR_DATALENGTH`, and `mount_point` from
+/// `ATTR_DIR_MOUNTSTATUS`. The other values of a mount point are those of the
+/// file system below it, so compare `mount_point` rather than `dev` with the
+/// parent to find where a mount starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
     pub(crate) name: Vec<u8>,
