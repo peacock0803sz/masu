@@ -411,3 +411,28 @@ fn broken_second_entry_stops_the_read() {
         assert_eq!(calls, 1, "{why}");
     }
 }
+
+#[test]
+fn reads_until_the_end_across_calls() {
+    let (fill, calls) = scripted(vec![
+        Ok(batch(&[plain(b"a"), plain(b"b")])),
+        Ok(batch(&[plain(b"c"), plain(b"d"), plain(b"e")])),
+        Ok(batch(&[plain(b"f")])),
+    ]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    let names: Vec<_> = listing.entries.iter().map(|e| e.name.clone()).collect();
+    assert_eq!(
+        names,
+        [b"a", b"b", b"c", b"d", b"e", b"f"].map(|n| n.to_vec())
+    );
+    assert_eq!(listing.failure, None);
+    assert_eq!(calls.get(), 4);
+}
+
+#[test]
+fn empty_directory_ends_after_one_call() {
+    let (fill, calls) = scripted(vec![]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(listing, Listing::default());
+    assert_eq!(calls.get(), 1);
+}
