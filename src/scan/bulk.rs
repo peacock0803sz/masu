@@ -1,6 +1,6 @@
 //! Parses `getattrlistbulk` responses into a listing.
 
-use super::listing::{Entry, Failure, Kind, Listing};
+use super::listing::{Entry, EntryError, Failure, Kind, Listing};
 
 // The bit values come from `sys/attr.h`. libc defines them only for Apple
 // targets, and this module is also built for Linux tests, so they are defined
@@ -106,9 +106,13 @@ fn parse_entry(entry: &[u8], listing: &mut Listing) -> Result<(), Malformed> {
         return Err(Malformed);
     }
 
-    if common & ATTR_CMN_ERROR != 0 {
-        r.u32()?;
-    }
+    // The error comes before the name, so reading them the other way round
+    // would take the name's offset for an errno.
+    let error = if common & ATTR_CMN_ERROR != 0 {
+        r.u32()?
+    } else {
+        0
+    };
 
     let mut name = None;
     if common & ATTR_CMN_NAME != 0 {
@@ -123,6 +127,16 @@ fn parse_entry(entry: &[u8], listing: &mut Listing) -> Result<(), Malformed> {
         let bytes = entry.get(start..end).ok_or(Malformed)?;
         let until_nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         name = Some(bytes[..until_nul].to_vec());
+    }
+
+    if error != 0 {
+        // The attributes after the name are not packed for an error entry.
+        let errno = i32::try_from(error).map_err(|_| Malformed)?;
+        listing.errors.push(EntryError {
+            name: name.filter(|n| !n.is_empty()),
+            errno,
+        });
+        return Ok(());
     }
 
     let dev = if common & ATTR_CMN_DEVID != 0 {
