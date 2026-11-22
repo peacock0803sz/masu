@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::*;
-use crate::scan::listing::{Entry, Failure, Kind, Listing};
+use crate::scan::listing::{Entry, EntryError, Failure, Kind, Listing};
 
 /// The buffer size the tests hand to `collect`.
 const TEST_BUF: usize = 4096;
@@ -435,4 +435,98 @@ fn empty_directory_ends_after_one_call() {
     let listing = collect(&mut vec![0u8; TEST_BUF], fill);
     assert_eq!(listing, Listing::default());
     assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn reads_error_entries_between_plain_ones() {
+    let denied = Spec {
+        error: Some(13),
+        name: Some(b"denied".to_vec()),
+        ..Spec::default()
+    };
+    let (listing, _) = read(&[plain(b"a"), denied, plain(b"b")]);
+    assert_eq!(listing.entries, vec![plain_entry(b"a"), plain_entry(b"b")]);
+    assert_eq!(
+        listing.errors,
+        vec![EntryError {
+            name: Some(b"denied".to_vec()),
+            errno: 13
+        }]
+    );
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn error_entry_without_a_name_has_none() {
+    let spec = Spec {
+        error: Some(2),
+        ..Spec::default()
+    };
+    let (listing, _) = read(&[spec]);
+    assert_eq!(
+        listing.errors,
+        vec![EntryError {
+            name: None,
+            errno: 2
+        }]
+    );
+    assert_eq!(listing.entries, vec![]);
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn reads_hand_written_error_entry() {
+    // Written from the layout in getattrlistbulk(2), not from `encode`.
+    let parts: [&[u8]; 9] = [
+        &48u32.to_ne_bytes(),
+        &0xA000_0001u32.to_ne_bytes(),
+        &[0; 16],
+        &13u32.to_ne_bytes(),
+        &8i32.to_ne_bytes(),
+        &7u32.to_ne_bytes(),
+        b"denied\0",
+        &[0; 5],
+        &[],
+    ];
+    let bytes = parts.concat();
+    assert_eq!(bytes.len(), 48);
+
+    let spec = Spec {
+        error: Some(13),
+        name: Some(b"denied".to_vec()),
+        ..Spec::default()
+    };
+    assert_eq!(spec.encode(), bytes);
+
+    let (fill, _) = scripted(vec![Ok((bytes, 1))]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(
+        listing.errors,
+        vec![EntryError {
+            name: Some(b"denied".to_vec()),
+            errno: 13
+        }]
+    );
+    assert_eq!(listing.entries, vec![]);
+    assert_eq!(listing.failure, None);
+}
+
+#[test]
+fn retries_an_interrupted_call() {
+    let (fill, calls) = scripted(vec![Err(4), Ok(batch(&[plain(b"a")]))]);
+    let listing = collect(&mut vec![0u8; TEST_BUF], fill);
+    assert_eq!(listing.entries, vec![plain_entry(b"a")]);
+    assert_eq!(listing.failure, None);
+    assert_eq!(calls.get(), 3);
+}
+
+#[test]
+fn errno_that_does_not_fit_is_malformed() {
+    let spec = Spec {
+        error: Some(0x8000_0000),
+        ..plain(b"x")
+    };
+    let (listing, _) = read(&[plain(b"a"), spec]);
+    assert_eq!(listing.entries, vec![plain_entry(b"a")]);
+    assert_eq!(listing.failure, Some(Failure::Malformed));
 }
