@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::*;
+
+const DIR_MNTSTATUS_TRIGGER: u32 = 0x0000_0002;
 use crate::scan::listing::{Entry, EntryError, Failure, Kind, Listing};
 
 /// The buffer size the tests hand to `collect`.

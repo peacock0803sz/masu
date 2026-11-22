@@ -11,9 +11,16 @@ const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
 const ATTR_CMN_FILEID: u32 = 0x0200_0000;
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+const ATTR_DIR_MOUNTSTATUS: u32 = 0x0000_0004;
+const ATTR_DIR_ALLOCSIZE: u32 = 0x0000_0008;
+const ATTR_DIR_DATALENGTH: u32 = 0x0000_0020;
 const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
 const ATTR_FILE_DATALENGTH: u32 = 0x0000_0200;
+
+/// The bit of `ATTR_DIR_MOUNTSTATUS` that marks a mount point. The trigger bit
+/// of automounts is left to the scan.
+const DIR_MNTSTATUS_MNTPOINT: u32 = 0x0000_0001;
 
 // The values of `enum vtype` in `sys/vnode.h`.
 const VREG: u32 = 1;
@@ -28,9 +35,8 @@ pub(super) const REQUESTED_COMMON: u32 = ATTR_CMN_RETURNED_ATTRS
     | ATTR_CMN_ERROR;
 pub(super) const REQUESTED_FILE: u32 =
     ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH;
-// Directory attributes are added when the size and the mount point mark of
-// subdirectories are read.
-pub(super) const REQUESTED_DIR: u32 = 0;
+pub(super) const REQUESTED_DIR: u32 =
+    ATTR_DIR_MOUNTSTATUS | ATTR_DIR_ALLOCSIZE | ATTR_DIR_DATALENGTH;
 
 /// `EINTR` in `sys/errno.h` on macOS. A signal interrupted the call, so the
 /// same call is made again.
@@ -163,21 +169,39 @@ fn parse_entry(entry: &[u8], listing: &mut Listing) -> Result<(), Malformed> {
     } else {
         None
     };
+    // A directory gets the directory group and anything else the file group.
+    // Without a kind, whichever group came back is read.
+    let mismatched = (dir != 0 && file != 0)
+        || (kind == Some(Kind::Dir) && file != 0)
+        || (kind.is_some_and(|k| k != Kind::Dir) && dir != 0);
+    if mismatched {
+        return Err(Malformed);
+    }
+
+    let mount_point = if dir & ATTR_DIR_MOUNTSTATUS != 0 {
+        Some(r.u32()? & DIR_MNTSTATUS_MNTPOINT != 0)
+    } else {
+        None
+    };
+    let mut alloc_size = None;
+    let mut logical_size = None;
+    if dir & ATTR_DIR_ALLOCSIZE != 0 {
+        alloc_size = Some(r.size()?);
+    }
+    if dir & ATTR_DIR_DATALENGTH != 0 {
+        logical_size = Some(r.size()?);
+    }
     let link_count = if file & ATTR_FILE_LINKCOUNT != 0 {
         Some(r.u32()?)
     } else {
         None
     };
-    let alloc_size = if file & ATTR_FILE_ALLOCSIZE != 0 {
-        Some(r.size()?)
-    } else {
-        None
-    };
-    let logical_size = if file & ATTR_FILE_DATALENGTH != 0 {
-        Some(r.size()?)
-    } else {
-        None
-    };
+    if file & ATTR_FILE_ALLOCSIZE != 0 {
+        alloc_size = Some(r.size()?);
+    }
+    if file & ATTR_FILE_DATALENGTH != 0 {
+        logical_size = Some(r.size()?);
+    }
 
     // `ATTR_CMN_NAME` is mandatory for the call, so a missing name means the
     // response is read wrongly.
@@ -190,7 +214,7 @@ fn parse_entry(entry: &[u8], listing: &mut Listing) -> Result<(), Malformed> {
         link_count,
         alloc_size,
         logical_size,
-        mount_point: None,
+        mount_point,
     });
     Ok(())
 }
