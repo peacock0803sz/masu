@@ -363,3 +363,70 @@ fn fd_balance_child() {
     }
     assert_eq!(open_fds(), before);
 }
+
+#[test]
+fn subdirectory_sizes_match_lstat() {
+    let dir = TempDir::new("subdirs");
+    fs::create_dir(dir.path().join("empty-sub")).unwrap();
+    let full = dir.path().join("full-sub");
+    fs::create_dir(&full).unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(full.join(name), b"x").unwrap();
+    }
+
+    let listing = read_dir(dir.path());
+    assert_eq!(listing.failure, None);
+    for name in [&b"empty-sub"[..], b"full-sub"] {
+        let entry = listing.entries.iter().find(|e| e.name == name).unwrap();
+        let meta = fs::symlink_metadata(dir.path().join(OsStr::from_bytes(name))).unwrap();
+        assert_eq!(entry.alloc_size, Some(meta.blocks() * 512));
+        assert_eq!(entry.logical_size, Some(meta.size()));
+        assert_eq!(entry.mount_point, Some(false));
+    }
+}
+
+/// The names of the mounts that sit directly under `/`.
+fn mounts_under_root() -> std::collections::BTreeSet<Vec<u8>> {
+    // SAFETY: a null buffer only asks for the number of mounts.
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    assert!(count > 0, "getfsstat failed");
+    // SAFETY: `statfs` is plain data, for which all zeros is a valid value.
+    let mut stats: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; count as usize];
+    let size = i32::try_from(std::mem::size_of_val(stats.as_slice())).unwrap();
+    // SAFETY: `stats` has room for `size` bytes of `statfs`.
+    let filled = unsafe { libc::getfsstat(stats.as_mut_ptr(), size, libc::MNT_NOWAIT) };
+    assert!(filled >= 0, "getfsstat failed");
+    stats.truncate(filled as usize);
+
+    stats
+        .iter()
+        .filter_map(|stat| {
+            let raw = &stat.f_mntonname;
+            let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+            let bytes: Vec<u8> = raw[..end].iter().map(|&c| c as u8).collect();
+            let rest = bytes.strip_prefix(b"/")?;
+            (!rest.is_empty() && !rest.contains(&b'/')).then(|| rest.to_vec())
+        })
+        .collect()
+}
+
+#[test]
+fn root_marks_mount_points() {
+    let listing = read_dir(Path::new("/"));
+    assert_eq!(listing.failure, None);
+
+    let dev = listing.entries.iter().find(|e| e.name == b"dev").unwrap();
+    assert_eq!(dev.mount_point, Some(true));
+    let root_dev = fs::symlink_metadata("/").unwrap().dev() as i32;
+    let dev_dev = fs::symlink_metadata("/dev").unwrap().dev() as i32;
+    assert_eq!(dev.dev, Some(root_dev));
+    assert_ne!(dev.dev, Some(dev_dev));
+
+    let marked: std::collections::BTreeSet<Vec<u8>> = listing
+        .entries
+        .iter()
+        .filter(|e| e.mount_point == Some(true))
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(marked, mounts_under_root());
+}
