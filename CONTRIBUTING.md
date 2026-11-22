@@ -53,6 +53,12 @@ Keep the checks passing on both.
 - Gate helper code used only by macOS-specific code with the same `cfg`.
   Do not silence it with `#[allow(dead_code)]`, directly or through `cfg_attr`.
   The allow would also hide code that becomes dead on macOS
+- As an exception, parsing code that does not call macOS APIs but is only used by macOS-specific code,
+  such as code that reads a buffer filled by a macOS API, may be gated with `#[cfg(any(target_os = "macos", test))]`.
+  Its unit tests then also run on Linux.
+  The code that calls the API stays under `#[cfg(target_os = "macos")]`
+- Gate a module that only tests call yet with `#[cfg(test)]` until the issue that calls it from `main`.
+  Do not keep it alive with `dead_code` allowances
 - Everything outside these gates must build and pass its tests on Linux
 - Keep tests that need `sudo` or disk images out of `nix flake check`.
   The issue that adds such a test also adds the CI steps to run it
